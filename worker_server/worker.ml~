@@ -1,0 +1,37 @@
+open Protocol
+
+let maptbl = Hashtbl.create 10
+let redtbl = Hashtbl.create 10
+let send_response client response =
+  let success = Connection.output client response in
+    (if not success then
+      (Connection.close client;
+       print_endline "Connection lost before response could be sent.")
+    else ());
+    success
+
+let rec handle_request client =
+  match Connection.input client with
+    Some v ->
+      begin
+        match v with
+        | InitMapper (source, shared_data) -> (match (Program.build source) with
+                     | (Some id, str) -> Hashtbl.add maptbl (id, ""); Program.write_shared_data id shared_data; send_response client Mapper(Some id, "")
+		     | (None, error) -> send_response client Mapper(None, error))
+        | InitReducer source -> (match (Program.build source) with
+	             | (Some id, str) -> Hashtbl.add redtbl (id, ""); send_response client Reducer(Some id, "")
+		     | (None, error) -> send_response client Reducer (None, error))
+        | MapRequest (id, k, v) -> if Hashtbl.mem maptbl id then (match (Program.run id (k,v)) with
+                                                                  | Some value -> send_response client MapResults(id,value)
+								  | None -> send_response client RuntimeError(id,"No output"))
+                                   else send_response client InvalidWorker(id)
+        | ReduceRequest (id, k, v) -> if Hashtbl.mem redtbl id then (match (Program.run id (k,v)) with
+	                                                            | Some value -> send_response client ReduceResults(id,value)
+                                                                    | None -> send_response client RuntimeError(id,"No output"))
+	                              else send_response client InvalidWorker(id)
+          
+      end
+  | None ->
+      Connection.close client;
+      print_endline "Connection lost while waiting for request."
+
