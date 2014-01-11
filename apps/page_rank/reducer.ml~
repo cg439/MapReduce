@@ -1,0 +1,1 @@
+let (key,values) = Program.get_input() in

@@ -1,0 +1,109 @@
+open Util
+open Worker_manager
+
+let tpool = Thread_pool.create 101
+
+let mutex = Mutex.create()
+
+let workQ = Queue.create()
+
+let pending = Hashtbl.create 10
+
+let pushWork () : unit =  Mutex.lock mutex; 
+                   Hashtbl.iter (fun a b -> Queue.add b workQ; 
+                   Hashtbl.remove pending a) pending;
+                   Mutex.unlock mutex
+
+let rec fuse acc lst = 
+    match lst with
+    | [] -> acc
+    | h::t ->  h::fuse acc t
+
+let map kv_pairs shared_data map_filename : (string * string) list = 
+  let resultsL = ref [] in
+  let manager = Worker_manager.initialize_mappers map_filename shared_data in
+  let run = ref 1 in
+  let callMap kv worker : unit =
+    Mutex.lock mutex;
+    match (Worker_manager.map worker (fst kv) (snd kv)) with
+    | Some(x) -> if Hashtbl.mem pending worker then
+                 (Hashtbl.remove pending worker; 
+		  Worker_manager.push_worker manager worker;
+		  resultsL:= x::!resultsL; 
+		  Mutex.unlock mutex)
+	          else (Worker_manager.push_worker manager worker; 
+			Mutex.unlock mutex)
+    | None -> (Worker_manager.push_worker manager worker;
+	      Mutex.unlock mutex) in 
+     List.iter (fun a -> Queue.add a workQ) kv_pairs;
+       while (!run = 1) do
+	 if not(Queue.is_empty workQ) then 
+	 begin
+	  if 
+          let worker = Worker_manager.pop_worker man in
+          let kv = Queue.pop workQ in
+          Mutex.lock mutex;
+          Hashtbl.add pending worker kv;
+	  Mutex.unlock mutex;
+          Thread_pool.add_work (callMap kv worker) tpool;
+          Thread.delay(0.1);
+         end
+	 else
+	  if(Hashtbl.length pending > 0) then pushWork ()
+	  else run := 0
+       done;
+       !resultsL
+  
+let combine kv_pairs : (string * string list) list = 
+    let results = Hashtbl.create 200 in
+    let keys = List.map fst kv_pairs in 
+    let remove_dups lst = List.fold_left (fun acc z -> if List.mem z acc then acc else z::acc) [] lst in
+    List.iter (fun x -> Hashtbl.add results (fst x) (snd x)) kv_pairs;
+    List.map (fun a -> (a, Hashtbl.find_all results a)) (remove_dups keys)
+  
+let reduce kvs_pairs shared_data reduce_filename : (string * string list) list =
+  let man = Worker_manager.initialize_reducers reduce_filename shared_data in
+  let reducer pend rQ mu man a worker : unit =
+    let return = match (Worker_manager.reduce worker (fst a) (snd a)) with
+    | Some x -> x
+    | None -> [] in 
+    Mutex.lock mu;
+    let pair = ((fst a), return) in
+    if Hashtbl.mem pend worker then(
+    Hashtbl.remove pend worker; 
+    Worker_manager.push_worker man worker;
+    Queue.add pair rQ;
+    Mutex.unlock mu;)
+    else  
+    Worker_manager.push_worker man worker;
+    Mutex.unlock mu; in
+       List.iter (fun a -> Queue.add a workQ) kvs_pairs;
+       while (not(Queue.is_empty workQ) || Hashtbl.length pending > 0) do
+       let empty = Queue.is_empty workQ in
+       let length = Hashtbl.length pending in
+       if (empty && length > 0) then pushWork ()
+       else 
+          let worker = Worker_manager.pop_worker man in
+          let a = Queue.pop workQ in
+          let callRed () : unit =  reducer pending resultsQ mu man a worker in
+          Hashtbl.add pending worker a;
+          Thread_pool.add_work callRed tpool;
+          Thread.delay(0.1);
+       done;
+       Thread_pool.destroy tpool;
+       Worker_manager.clean_up_workers man;
+       Queue.fold (fun acc1 pair -> pair::acc1) [] resultsQ
+
+let map_reduce (app_name : string) (mapper : string) 
+    (reducer : string) (filename : string) =
+  let app_dir = Printf.sprintf "apps/%s/" app_name in
+  let docs = load_documents filename in
+  let titles = Hashtable.create 16 Hashtbl.hash in
+  let add_document (d : document) : (string * string) =
+    let id_s = string_of_int d.id in
+    Hashtable.add titles id_s d.title; (id_s, d.body) in
+  let kv_pairs = List.map add_document docs in
+  let mapped = map kv_pairs "" (app_dir ^ mapper ^ ".ml") in
+  let combined = Util.print_map_results mapped; combine mapped in
+  let reduced = Util.print_combine_results combined; reduce combined  "" (app_dir ^ reducer ^ ".ml") in
+  (titles, reduced)

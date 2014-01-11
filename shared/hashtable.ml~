@@ -1,0 +1,83 @@
+type ('a, 'b) t =   
+  { 
+    items : int ref;
+    hfun : ('a -> int) ref;
+    table : ((('a * 'b) list) array) ref
+  }
+
+let create capacity hash =
+  {
+    items = ref 0;
+    hfun = ref hash;
+    table = ref (Array.make capacity [])
+  }
+
+let add table key value =
+
+   let n = Array.length !(table.table) in
+   let index = !(table.hfun) key mod Sys.max_array_length in
+
+   let addEntry t i x =
+     match !(t.table).(i) with
+        [] -> t.items := !(t.items) + 1;
+              Array.set !(t.table) (i) [x]
+       | _ -> Array.set !(t.table) (i) [x] in
+
+   if (index >= n) then
+     let size = ref (2 * n) in
+
+     while (index > !size) do
+       size := !size * 2;
+       if (!size) > Sys.max_array_length then size := Sys.max_array_length
+     done;
+
+     let h = create (!size) !(table.hfun) in
+     for i = 0 to n - 1 do
+       List.iter (fun (k, v) -> addEntry h i (k, v)) !(table.table).(i)
+     done;
+
+     addEntry h index (key, value);
+     table.table := !(h.table);
+     table.items := !(h.items)
+   else 
+     addEntry table index (key, value)
+  
+let find table key = 
+  let index = !(table.hfun) key mod Sys.max_array_length in
+  match !(table.table).(index) with 
+        [] -> raise Not_found
+      | [(_, x)] -> x
+      | _ -> raise Not_found
+  
+let mem table key =
+  let index = !(table.hfun) key mod Sys.max_array_length in
+  match !(table.table).(index) with 
+        [] -> false
+      | [(a, b)] -> true
+      | _ -> false
+
+let remove table key =
+  let index = !(table.hfun) key mod Sys.max_array_length in
+  match !(table.table).(index) with 
+      [] -> Array.set !(table.table) (index) []
+     | _ -> table.items := !(table.items) - 1;
+            Array.set !(table.table) (index) []
+
+let iter f table = 
+   let n = Array.length !(table.table) in
+     for i = 0 to n - 1 do
+       match !(table.table).(i) with
+        | [(a, x)] -> Array.set !(table.table) (i) [(a, f x)]
+        | _ -> ( )
+     done
+
+let fold f table init =
+   let n = Array.length !(table.table) in
+   let rec foldh acc c = 
+       match !(table.table).(c) with
+        | [(a, x)] -> if (c < n - 1) then foldh (acc + f x) (c + 1)
+                      else (acc + f x)
+        | _ -> if (c < n - 1) then foldh (acc) (c + 1)
+               else (acc) in foldh init 0
+
+let length table = let length = table.items in !length

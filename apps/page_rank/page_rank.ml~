@@ -1,0 +1,47 @@
+open Util
+
+let main (args : string array) : unit = 
+  if Array.length args < 3 then
+    Printf.printf "Usage: page_rank <filename> <numiterations>"
+  else
+    let filename = args.(2) in
+    let num = int_of_string (args.(3)) in
+    let app_dir = Printf.sprintf "apps/%s/" "page_rank" in
+    let sites = load_websites filename in
+    let n = List.length (sites) in 
+    let ranks = Hashtbl.create n in
+    let links = Hashtbl.create n in
+    let initRanks () = 
+      let denom = float_of_int n in
+      let adder x = Hashtbl.add ranks (x.pageid) (1.0 /. denom);
+                    Hashtbl.add links (x.pageid) (x.links) in
+      List.iter adder sites  in
+    let add_pair site = 
+      let id = site.pageid in
+      let links = site.links in
+      let rank = Hashtbl.find ranks id in
+      (Util.marshal id, Util.marshal rank) in   
+    let updateRanks a =
+      Hashtbl.replace ranks (fst a) (snd a)  in
+    let pageRankConv (lst :(string * string list) list) =
+        let conv (x: string*string list) = 
+          let id = Util.unmarshal (fst x) in
+          let rank = match (snd x) with
+                     | h::[] -> Util.unmarshal h
+                     | _ -> 0.0 in
+          let outgoing = float_of_int (List.length (Hashtbl.find links id)) in
+          (id, (rank /. outgoing)) in
+        List.fold_left (fun acc x -> conv x::acc) [] lst in   
+    let rec iterate i = 
+    let kv_pairs = List.map add_pair sites in 
+    let mapped  
+    Map_reduce.map kv_pairs (Util.marshal links) (app_dir ^ mapper ^ ".ml") in
+    let combined =  Map_reduce.combine mapped in
+    let reduced =  Map_reduce.reduce combined  "" (app_dir ^ reducer ^ ".ml") in
+        if i = 1 then 
+        Util.print_page_ranks (pageRankConv reduced)
+        else List.iter updateRanks (pageRankConv reduced);
+             iterate (i-1) in
+          initRanks();
+          iterate num
+         
